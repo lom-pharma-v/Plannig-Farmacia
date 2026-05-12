@@ -646,28 +646,45 @@ function addSR(tb,sec,ds,cubs,fest){
 }
 
 // Returns list of section labels where name is assigned on day (excluding secId)
+// Returns descriptive conflict labels for name on day, excluding excludeSecId
 function getConflicts(name,day,excludeSecId){
   const conflicts=[];
+  // SD sections
   SD.forEach(s=>{
     if(s.id===excludeSecId)return;
     const a=(ws.asgn[s.id]||{})[day]||[];
     if(a.includes(name))conflicts.push(s.l);
   });
+  // Residencias: person is the assigned person (or default) on that day
+  RD.forEach(r=>{
+    const dayData=(ws.res[r.id]||[])[day];
+    if(!dayData||!dayData.on)return;
+    const per=dayData.p||r.p;
+    if(per===name)conflicts.push('Res. '+r.l);
+  });
+  // Intensificaciones: person is intensified (covering someone else's work)
+  ws.intens.forEach(iv=>{
+    if(iv.c===name)conflicts.push('Intensif. de '+iv.p);
+    // If name is the intensified person, their cubridor covers them — name itself is "busy"
+    if(iv.p===name)conflicts.push('Intensificado (cubre '+iv.c+')');
+  });
   return conflicts;
 }
 
-// Is person assigned somewhere (any section) on this day?
+// Is person assigned somewhere (any section, residencia or intensif) on this day?
 function isAssignedSomewhereOnDay(name,day){
-  return SD.some(s=>{
-    const a=(ws.asgn[s.id]||{})[day]||[];
-    return a.includes(name);
-  });
+  if(SD.some(s=>{const a=(ws.asgn[s.id]||{})[day]||[];return a.includes(name)}))return true;
+  if(RD.some(r=>{const d=(ws.res[r.id]||[])[day];return d&&d.on&&(d.p||r.p)===name}))return true;
+  if(ws.intens.some(iv=>iv.c===name||iv.p===name))return true;
+  return false;
 }
 
-// Is person assigned in multiple sections on this day?
+// Is person assigned in multiple places on this day? (for asterisk)
 function isDoubleAssigned(name,day){
   let count=0;
   SD.forEach(s=>{const a=(ws.asgn[s.id]||{})[day]||[];if(a.includes(name))count++});
+  RD.forEach(r=>{const d=(ws.res[r.id]||[])[day];if(d&&d.on&&(d.p||r.p)===name)count++});
+  if(ws.intens.some(iv=>iv.c===name))count++; // cubridor counts as assigned
   return count>1;
 }
 
