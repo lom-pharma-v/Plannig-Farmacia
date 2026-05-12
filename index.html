@@ -645,6 +645,32 @@ function addSR(tb,sec,ds,cubs,fest){
   tb.appendChild(tr);
 }
 
+// Returns list of section labels where name is assigned on day (excluding secId)
+function getConflicts(name,day,excludeSecId){
+  const conflicts=[];
+  SD.forEach(s=>{
+    if(s.id===excludeSecId)return;
+    const a=(ws.asgn[s.id]||{})[day]||[];
+    if(a.includes(name))conflicts.push(s.l);
+  });
+  return conflicts;
+}
+
+// Is person assigned somewhere (any section) on this day?
+function isAssignedSomewhereOnDay(name,day){
+  return SD.some(s=>{
+    const a=(ws.asgn[s.id]||{})[day]||[];
+    return a.includes(name);
+  });
+}
+
+// Is person assigned in multiple sections on this day?
+function isDoubleAssigned(name,day){
+  let count=0;
+  SD.forEach(s=>{const a=(ws.asgn[s.id]||{})[day]||[];if(a.includes(name))count++});
+  return count>1;
+}
+
 function mkPC(name,day,secId){
   const c=document.createElement('span');
   const cb=getCub(name);
@@ -661,7 +687,8 @@ function mkPC(name,day,secId){
   if(isRes)c.className='pc pr2';
   else if(!isHab)c.className='pc px';
   else c.className='pc pn';
-  c.textContent=name;
+  const double=isDoubleAssigned(name,day);
+  c.innerHTML=double?`${name}<span style="color:var(--red);font-weight:900;margin-left:1px">*</span>`:name;
   return c;
 }
 
@@ -802,40 +829,80 @@ function rfSM(){
 }
 function rfSM_sec(tbody,fest){
   const sec=SD.find(s=>s.id===aSM_id);if(!sec)return;
-  const seen=new Set();const people=[];
-  for(let d=0;d<5;d++){((ws.asgn[aSM_id]||{})[d]||[]).forEach(n=>{if(n!=='TODOS'&&!seen.has(n)&&!isGU(n)){seen.add(n);people.push(n)}})}
-  _stf.filter(s=>s.active&&inSec(s,aSM_id)).forEach(s=>{if(!seen.has(s.name)){seen.add(s.name);people.push(s.name)}});
-  // TODOS rows
-  const todosDays=[];for(let d=0;d<5;d++){if(((ws.asgn[aSM_id]||{})[d]||[]).includes('TODOS'))todosDays.push(d)}
-  if(todosDays.length){
-    const tr=document.createElement('tr');const td0=document.createElement('td');td0.className='snm2';td0.innerHTML='<span style="color:#92400e;font-weight:700">⚡ TODOS</span>';tr.appendChild(td0);
+  // Collect already-assigned/habitual names for this section
+  const already=new Set();
+  for(let d=0;d<5;d++){((ws.asgn[aSM_id]||{})[d]||[]).forEach(n=>{if(n!=='TODOS'&&!isGU(n))already.add(n)})}
+  _stf.filter(s=>s.active&&inSec(s,aSM_id)).forEach(s=>already.add(s.name));
+  const regs=_stf.filter(s=>s.active&&s.type!=='resident');
+  const ress=_stf.filter(s=>s.active&&s.type==='resident');
+  // Week-wide availability for grouping
+  function weekSt(name){
+    let hasFree=false,hasBusy=false;
     for(let d=0;d<5;d++){
-      const td=document.createElement('td');td.className='stgl';const has=todosDays.includes(d);
-      const btn=document.createElement('button');btn.className='stb '+(has?'on':'off');btn.textContent=has?'✓':'—';
-      const dd=d;btn.onclick=()=>{smToggleVal(aSM_id,dd,'TODOS');};
-      td.appendChild(btn);tr.appendChild(td);
+      if(fest[d])continue;
+      if(isUN(name,d))continue;
+      if(getConflicts(name,d,aSM_id).length)hasBusy=true; else hasFree=true;
     }
-    const tdx=document.createElement('td');const bx=document.createElement('button');bx.style.cssText='background:none;border:none;cursor:pointer;color:var(--red);font-size:13px';bx.textContent='×';
-    bx.onclick=()=>{todosDays.forEach(d=>{const arr=(ws.asgn[aSM_id]||{})[d]||[];const ti=arr.indexOf('TODOS');if(ti>-1)arr.splice(ti,1)});svWS();rfSM();ra()};
-    tdx.appendChild(bx);tr.appendChild(tdx);tbody.appendChild(tr);
+    if(hasFree)return 'free'; if(hasBusy)return 'busy'; return 'absent';
   }
-  people.forEach(name=>{
-    const tr=document.createElement('tr');const td0=document.createElement('td');td0.className='snm2';td0.textContent=name;tr.appendChild(td0);
-    for(let d=0;d<5;d++){
-      const td=document.createElement('td');td.className='stgl';
-      if(fest[d]){td.innerHTML='<span style="font-size:10px;color:#d97706">🗓</span>';tr.appendChild(td);continue}
-      const assigned=((ws.asgn[aSM_id]||{})[d]||[]).includes(name);
-      const absent=isUN(name,d);
-      const btn=document.createElement('button');btn.className='stb '+(assigned?'on':'off');
-      btn.textContent=assigned?(absent?'⚠':'✓'):'+'
-      const dd=d,nn=name;
-      btn.onclick=()=>{smToggleVal(aSM_id,dd,nn)};
-      td.appendChild(btn);tr.appendChild(td);
+  // TODOS row
+  const todosDays=[];for(let d=0;d<5;d++){if(((ws.asgn[aSM_id]||{})[d]||[]).includes('TODOS'))todosDays.push(d)}
+  if(todosDays.length)tbody.appendChild(mkSMRow_todos(todosDays,fest));
+  // In-section people
+  const inSecArr=[...already].filter(n=>!isGU(n));
+  function secHdr(txt){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=7;td.style.cssText='padding:3px 2px 2px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#94a3b8;background:#f8fafc;border-bottom:1px solid var(--bdr)';td.textContent=txt;tr.appendChild(td);tbody.appendChild(tr)}
+  if(inSecArr.length){secHdr('En esta sección');inSecArr.forEach(n=>tbody.appendChild(mkSMRow_person(n,fest,aSM_id,false)))}
+  const notIn=regs.filter(s=>!already.has(s.name));
+  const gFree=notIn.filter(s=>weekSt(s.name)==='free');
+  const gBusy=notIn.filter(s=>weekSt(s.name)==='busy');
+  const gAbs=notIn.filter(s=>weekSt(s.name)==='absent');
+  if(gFree.length){secHdr('🟢 Disponibles');gFree.forEach(s=>tbody.appendChild(mkSMRow_person(s.name,fest,aSM_id,false)))}
+  if(gBusy.length){secHdr('🟡 Ya en otra sección');gBusy.forEach(s=>tbody.appendChild(mkSMRow_person(s.name,fest,aSM_id,false)))}
+  if(gAbs.length){secHdr('🔴 Ausentes esta semana');gAbs.forEach(s=>tbody.appendChild(mkSMRow_person(s.name,fest,aSM_id,true)))}
+  if(ress.length){secHdr('🎓 Residentes');ress.forEach(s=>tbody.appendChild(mkSMRow_person(s.name,fest,aSM_id,false)))}
+}
+function mkSMRow_todos(todosDays,fest){
+  const tr=document.createElement('tr');const td0=document.createElement('td');td0.className='snm2';td0.innerHTML='<span style="color:#92400e;font-weight:700">⚡ TODOS</span>';tr.appendChild(td0);
+  for(let d=0;d<5;d++){
+    const td=document.createElement('td');td.className='stgl';
+    if(fest[d]){td.innerHTML='<span style="font-size:10px;color:#d97706">🗓</span>';tr.appendChild(td);continue}
+    const has=todosDays.includes(d);
+    const btn=document.createElement('button');btn.className='stb '+(has?'on':'off');btn.textContent=has?'✓':'—';
+    const dd=d;btn.onclick=()=>{smToggleVal(aSM_id,dd,'TODOS')};td.appendChild(btn);tr.appendChild(td);
+  }
+  const tdx=document.createElement('td');const bx=document.createElement('button');bx.style.cssText='background:none;border:none;cursor:pointer;color:var(--red);font-size:13px';bx.textContent='×';
+  bx.onclick=()=>{todosDays.forEach(d=>{const arr=(ws.asgn[aSM_id]||{})[d]||[];const ti=arr.indexOf('TODOS');if(ti>-1)arr.splice(ti,1)});svWS();rfSM();ra()};
+  tdx.appendChild(bx);tr.appendChild(tdx);return tr;
+}
+function mkSMRow_person(name,fest,secId,allAbsent){
+  const tr=document.createElement('tr');
+  const td0=document.createElement('td');td0.className='snm2';td0.textContent=name;
+  if(allAbsent)td0.style.opacity='.4';
+  tr.appendChild(td0);
+  for(let d=0;d<5;d++){
+    const td=document.createElement('td');td.className='stgl';
+    if(fest[d]){td.innerHTML='<span style="font-size:10px;color:#d97706">🗓</span>';tr.appendChild(td);continue}
+    const assigned=((ws.asgn[secId]||{})[d]||[]).includes(name);
+    const absent=isUN(name,d);
+    const conflicts=getConflicts(name,d,secId);
+    const hasConflict=conflicts.length>0;
+    const btn=document.createElement('button');
+    if(absent&&!assigned){
+      btn.className='stb off';btn.textContent='—';btn.style.opacity='.3';btn.disabled=true;
+    } else {
+      btn.className='stb '+(assigned?'on':'off');
+      btn.textContent=assigned?(absent?'⚠':'✓'):'+';
+      if(!assigned&&hasConflict&&!absent){
+        btn.style.cssText='padding:2px 8px;border-radius:8px;border:1.5px solid #fcd34d;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--fnt);background:#fef3c7;color:#92400e;min-width:30px';
+        btn.title='Ya en: '+conflicts.join(', ');
+      }
+      const dd=d,nn=name;btn.onclick=()=>{smToggleVal(secId,dd,nn)};
     }
-    const tdx=document.createElement('td');const bx=document.createElement('button');bx.style.cssText='background:none;border:none;cursor:pointer;color:var(--red);font-size:13px';bx.textContent='×';
-    const nn=name;bx.onclick=()=>{for(let d=0;d<5;d++){const arr=(ws.asgn[aSM_id]||{})[d]||[];const idx=arr.indexOf(nn);if(idx>-1)arr.splice(idx,1)}svWS();rfSM();ra()};
-    tdx.appendChild(bx);tr.appendChild(tdx);tbody.appendChild(tr);
-  });
+    td.appendChild(btn);tr.appendChild(td);
+  }
+  const tdx=document.createElement('td');const bx=document.createElement('button');bx.style.cssText='background:none;border:none;cursor:pointer;color:var(--red);font-size:13px';bx.textContent='×';
+  const nn=name;bx.onclick=()=>{for(let d=0;d<5;d++){const arr=(ws.asgn[secId]||{})[d]||[];const idx=arr.indexOf(nn);if(idx>-1)arr.splice(idx,1)}svWS();rfSM();ra()};
+  tdx.appendChild(bx);tr.appendChild(tdx);return tr;
 }
 function rfSM_res(tbody,fest){
   const res=RD.find(r=>r.id===aSM_id);if(!res)return;
@@ -888,16 +955,29 @@ function smAdd(){
   const days=[];for(let i=0;i<5;i++)if(document.getElementById('smdc'+i)?.checked)days.push(i);
   if(!days.length){alert('Selecciona al menos un día');return}
   if(aSM_type==='sec'){
-    days.forEach(d=>smToggleVal(aSM_id,d,name));
-    // Don't toggle off if already on — force on:
-    days.forEach(d=>{
-      if(!ws.asgn[aSM_id][d].includes(name)){
-        if(name==='TODOS'){ws.asgn[aSM_id][d]=['TODOS']}
-        else{const ti=ws.asgn[aSM_id][d].indexOf('TODOS');if(ti>-1)ws.asgn[aSM_id][d].splice(ti,1);if(!ws.asgn[aSM_id][d].includes(name))ws.asgn[aSM_id][d].push(name)}
+    if(name!=='TODOS'){
+      // Check conflicts on selected days and warn once
+      const dns=['Lunes','Martes','Miércoles','Jueves','Viernes'];
+      const conflictLines=[];
+      const festivos=ws.festivos||[0,0,0,0,0];
+      days.forEach(d=>{
+        if(!festivos[d]){
+          const c=getConflicts(name,d,aSM_id);
+          if(c.length)conflictLines.push(`${dns[d]}: ${c.join(', ')}`);
+        }
+      });
+      if(conflictLines.length){
+        if(!confirm('⚠️ '+name+' ya está asignado en:\n'+conflictLines.join('\n')+'\n\n¿Añadir igualmente?'))return;
       }
+    }
+    if(!ws.asgn[aSM_id])ws.asgn[aSM_id]={};
+    days.forEach(d=>{
+      if(!ws.asgn[aSM_id][d])ws.asgn[aSM_id][d]=[];
+      const arr=ws.asgn[aSM_id][d];
+      if(name==='TODOS'){ws.asgn[aSM_id][d]=['TODOS']}
+      else{const ti=arr.indexOf('TODOS');if(ti>-1)arr.splice(ti,1);if(!arr.includes(name))arr.push(name)}
     });
   } else {
-    // Residencia: set on=1 for selected days
     if(!ws.res[aSM_id])ws.res[aSM_id]=Array(5).fill(null).map(()=>({on:0,p:null}));
     days.forEach(d=>{ws.res[aSM_id][d]={on:1,p:name==='TODOS'?null:name}});
   }
@@ -917,29 +997,59 @@ function opCM(sec,day){
 }
 function rfCM(){
   if(!aSec)return;
-  const a=(ws.asgn[aSec.id]||{})[aDay]||[];const q=document.getElementById('csrch').value.toLowerCase();
+  const a=(ws.asgn[aSec.id]||{})[aDay]||[];
+  const q=document.getElementById('csrch').value.toLowerCase();
   const ac=document.getElementById('achips');ac.innerHTML='';
   if(!a.length)ac.innerHTML='<span style="font-size:11px;color:#94a3b8">Nadie asignado</span>';
   else a.forEach((n,i)=>{const c=document.createElement('span');c.className='ca';c.innerHTML=`${n==='TODOS'?'⚡ TODOS':n} <span class="cr" onclick="rmC(${i})">×</span>`;ac.appendChild(c)});
   document.getElementById('tdsbtn').classList.toggle('on',a.includes('TODOS'));
-  const regs=_stf.filter(s=>s.active&&s.type!=='resident');const ress=_stf.filter(s=>s.active&&s.type==='resident');
-  const notA=regs.filter(s=>!a.includes(s.name)&&s.name.toLowerCase().includes(q));
-  const hab=notA.filter(s=>inSec(s,aSec.id));const oth=notA.filter(s=>!inSec(s,aSec.id));
+
+  const allStf=_stf.filter(s=>s.active&&!a.includes(s.name)&&s.name.toLowerCase().includes(q));
+  const regs=allStf.filter(s=>s.type!=='resident');
+  const ress=allStf.filter(s=>s.type==='resident');
+
+  // Group 1: available (not assigned anywhere this day)
+  const grpFree=regs.filter(s=>!isGU(s.name)&&!isUN(s.name,aDay)&&!isAssignedSomewhereOnDay(s.name,aDay));
+  // Group 2: already in another section this day
+  const grpBusy=regs.filter(s=>!isGU(s.name)&&!isUN(s.name,aDay)&&isAssignedSomewhereOnDay(s.name,aDay));
+  // Group 3: absent (vacaciones/baja/guardia) — shown greyed, not clickable
+  const grpAbsent=regs.filter(s=>!isGU(s.name)&&isUN(s.name,aDay));
+
   const cl=document.getElementById('clist');cl.innerHTML='';
-  if(hab.length){const h=document.createElement('div');h.className='slh';h.textContent='Personal habitual';cl.appendChild(h);hab.forEach(s=>cl.appendChild(mkSI(s)))}
-  if(oth.length){const h=document.createElement('div');h.className='slh';h.textContent='Otro personal';cl.appendChild(h);oth.forEach(s=>cl.appendChild(mkSI(s)))}
-  if(!hab.length&&!oth.length)cl.innerHTML='<div style="padding:10px;text-align:center;color:#94a3b8;font-size:11px">Sin resultados</div>';
+
+  function addGrpHdr(txt,color){
+    const h=document.createElement('div');h.className='slh';
+    h.style.color=color||'#94a3b8';h.textContent=txt;cl.appendChild(h);
+  }
+
+  let any=false;
+  if(grpFree.length){addGrpHdr('🟢 Disponibles');grpFree.forEach(s=>{cl.appendChild(mkSI(s,false));any=true})}
+  if(grpBusy.length){addGrpHdr('🟡 Ya en otra sección hoy');grpBusy.forEach(s=>{cl.appendChild(mkSI(s,false));any=true})}
+  if(grpAbsent.length){addGrpHdr('🔴 Ausentes hoy');grpAbsent.forEach(s=>{cl.appendChild(mkSI(s,true));any=true})}
+  if(!any)cl.innerHTML='<div style="padding:10px;text-align:center;color:#94a3b8;font-size:11px">Sin resultados</div>';
+
+  // Residents at bottom (existing details section)
   const rl=document.getElementById('rlist');rl.innerHTML='';
-  ress.filter(s=>!a.includes(s.name)&&s.name.toLowerCase().includes(q)).forEach(s=>rl.appendChild(mkSI(s)));
+  ress.forEach(s=>rl.appendChild(mkSI(s,isUN(s.name,aDay))));
 }
-function mkSI(s){
-  const it=document.createElement('div');it.className='si';
+function mkSI(s,disabled){
+  const it=document.createElement('div');
+  it.className='si'+(disabled?' si-disabled':'');
+  if(disabled)it.style.cssText='opacity:.45;cursor:default';
   const sl=(s.secs||[]).map(id=>getSecLabel(id)).join(', ')||'';
-  it.innerHTML=`<div class="sin">${s.name}</div><div class="sim">${sl}</div>`;
-  it.onclick=()=>addC(s.name);return it;
+  // For busy people, show which section they're in today
+  const busySecs=aDay!==null?getConflicts(s.name,aDay,aSec?.id):[];
+  const busyStr=busySecs.length?`<span style="color:var(--amb);font-size:10px"> · hoy en: ${busySecs.join(', ')}</span>`:'';
+  it.innerHTML=`<div class="sin">${s.name}</div><div class="sim">${sl}${busyStr}</div>`;
+  if(!disabled)it.onclick=()=>addC(s.name);
+  return it;
 }
 function fltC(){rfCM()}
 function addC(n){
+  const conflicts=getConflicts(n,aDay,aSec.id);
+  if(conflicts.length){
+    if(!confirm(`⚠️ ${n} ya está asignado hoy en: ${conflicts.join(', ')}.\n¿Añadir igualmente?`))return;
+  }
   if(!ws.asgn[aSec.id])ws.asgn[aSec.id]={};if(!ws.asgn[aSec.id][aDay])ws.asgn[aSec.id][aDay]=[];
   const arr=ws.asgn[aSec.id][aDay];const ti=arr.indexOf('TODOS');if(ti>-1)arr.splice(ti,1);
   if(!arr.includes(n))arr.push(n);svWS();rfCM();ra();
